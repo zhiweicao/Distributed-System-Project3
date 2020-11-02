@@ -1,6 +1,10 @@
 package pb;
 
 import java.io.IOException;
+import java.net.UnknownHostException;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Set;
 import java.util.logging.Logger;
 
 import org.apache.commons.cli.CommandLine;
@@ -10,7 +14,9 @@ import org.apache.commons.cli.HelpFormatter;
 import org.apache.commons.cli.Options;
 import org.apache.commons.cli.ParseException;
 
-
+import pb.managers.endpoint.Endpoint;
+import pb.managers.ClientManager;
+import pb.managers.IOThread;
 import pb.managers.ServerManager;
 import pb.utils.Utils;
 
@@ -81,8 +87,98 @@ public class WhiteboardServer {
 	 */
 	private static int port = Utils.indexServerPort;
 	
+	//HOST:ID map to BoardID
+	private static final HashMap<String, String> boardMap = new HashMap<>();
+	private static final Set<String> clientAddrs = new HashSet<>();
 	
+	private static void addNewBoard(String boardID) {
+		String[] parts = boardID.split(":",3);
+		String hostWithIP = parts[0] + ":" + parts[1];
+		log.info("New board has been added into broad list. Board ID: " + boardID);
+		boardMap.put(boardID, hostWithIP);
+		clientAddrs.add(hostWithIP);
+	}
+
+	private static void removeBoard(String boardID) {
+		if (boardMap.containsKey(boardID)) {
+			boardMap.remove(boardID);
+			log.info("The board: " + boardID + " has been removed.");
+		} else {
+			log.warning("The board: " + boardID + " does not exist.");
+		}
+	}
+
+
+	private static void broadCastSharingBoard(String boardID, String receiverAddr) {
+		String[] parts = receiverAddr.split(":");
+		String receiverHost = parts[0];
+		int receverPort = Integer.parseInt(parts[1]);
+		try {
+			ClientManager clientManager = new ClientManager(receiverHost, receverPort);
+			clientManager.on(ClientManager.sessionStarted, (args) -> {
+				Endpoint endpoint = (Endpoint)args[0];
+				log.info("Connected to whiteboard client: "+endpoint.getOtherEndpointId());
+				endpoint.emit(WhiteboardServer.sharingBoard, boardID);
+				clientManager.shutdown();
+			}).on(ClientManager.sessionStopped, (args) -> {
+				Endpoint endpoint = (Endpoint)args[0];
+				log.info("Disconnected from peer: "+endpoint.getOtherEndpointId());
+				clientManager.shutdown();
+			}).on(ClientManager.sessionError, (args) -> {
+				Endpoint endpoint = (Endpoint)args[0];
+				log.info("There was error while communication with peer: "
+						+endpoint.getOtherEndpointId());
+				clientManager.shutdown();
+			});
+			clientManager.start();
+		} catch (UnknownHostException e) {
+			log.info("Unable sharing board to client. The whiteboard client host could not be found: "+ parts[0]);
+		} catch (InterruptedException e) {
+			log.info("Unable sharing board to client. Interrupted while trying to send updates to the client whiteboard.");
+		}
+	}
+
+	private static void broadCastBoardEventToAll(String event, String boardID) {
+		String[] parts = boardID.split(":");
+		String boardOwnerAddr = parts[0] + ":" + parts[1];
+		for (String addr: clientAddrs) {
+			if (addr.equals(boardOwnerAddr)) continue;
+
+			String[] receiverParts = addr.split(":");
+			String receiverHost = receiverParts[0];
+			int receverPort = Integer.parseInt(receiverParts[1]);
+
+			sendEventToClient(event, boardID, receiverHost, receverPort);
+		}
+	}
 	
+	private static void sendEventToClient(String event, String Args, String receiverHost, int receverPort) {
+		try {
+			ClientManager clientManager = new ClientManager(receiverHost, receverPort);
+			clientManager.on(ClientManager.sessionStarted, (args) -> {
+				Endpoint endpoint = (Endpoint)args[0];
+				log.info("Connected to whiteboard client: "+endpoint.getOtherEndpointId() + ". Attempt to send event: " + event);
+				endpoint.emit(event, Args);
+				clientManager.shutdown();
+			}).on(ClientManager.sessionStopped, (args) -> {
+				Endpoint endpoint = (Endpoint)args[0];
+				log.info("Disconnected from peer: "+endpoint.getOtherEndpointId());
+				clientManager.shutdown();
+			}).on(ClientManager.sessionError, (args) -> {
+				Endpoint endpoint = (Endpoint)args[0];
+				log.info("There was error while communication with peer: "
+						+endpoint.getOtherEndpointId());
+				clientManager.shutdown();
+			});
+			clientManager.start();
+		} catch (UnknownHostException e) {
+			log.info("Unable " + event + " to client. The whiteboard client host could not be found: "+ receiverHost);
+		} catch (InterruptedException e) {
+			log.info("Unable " + event + " to client. Interrupted while trying to send updates to the client whiteboard.");
+		}
+	}
+	
+
 	private static void help(Options options){
 		String header = "PB Whiteboard Server for Unimelb COMP90015\n\n";
 		String footer = "\ncontact aharwood@unimelb.edu.au for issues.";
@@ -128,10 +224,33 @@ public class WhiteboardServer {
         } else {
         	serverManager = new ServerManager(port);
         }
-        
+
         /**
          * TODO: Put some server related code here.
          */
+
+		serverManager.on(ServerManager.sessionStarted,(eventArgs)->{
+			Endpoint endpoint = (Endpoint)eventArgs[0];
+			log.info("Whiteboard client session started: "+endpoint.getOtherEndpointId());
+			endpoint.on(shareBoard, (eventArgs2)->{
+				addNewBoard((String)eventArgs2[0]);
+				broadCastBoardEventToAll(sharingBoard, (String)eventArgs2[0]);
+			}).on(unshareBoard, (eventArgs2)->{
+				removeBoard((String)eventArgs2[0]);
+				broadCastBoardEventToAll(unsharingBoard, (String)eventArgs2[0]);
+			});
+		}).on(ServerManager.sessionStopped,(eventArgs)->{
+        	Endpoint endpoint = (Endpoint)eventArgs[0];
+        	log.info("Whiteboard client session ended: "+endpoint.getOtherEndpointId());
+        }).on(ServerManager.sessionError, (eventArgs)->{
+        	Endpoint endpoint = (Endpoint)eventArgs[0];
+        	log.warning("Whiteboard client session ended in error: "+endpoint.getOtherEndpointId());
+        }).on(IOThread.ioThread, (eventArgs)->{
+        	String peerport = (String) eventArgs[0];
+        	// we don't need this info, but let's log it
+        	log.info("using Internet address: "+peerport);
+		});
+
         
         // start up the server
         log.info("Whiteboard Server starting up");
