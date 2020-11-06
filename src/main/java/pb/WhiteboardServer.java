@@ -2,6 +2,8 @@ package pb;
 
 import java.io.IOException;
 import java.net.UnknownHostException;
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Set;
@@ -87,10 +89,29 @@ public class WhiteboardServer {
 	 */
 	private static int port = Utils.indexServerPort;
 	
-	//HOST:ID map to BoardID
+	/**
+	 * Customize Parameters
+	 */
+	
+	/**
+	 * The client emit this event to server at the beginning.
+	 * Server will add this client into shared client list and send available board to it.
+	 */
+	public static final String joinNetwork = "JOIN_NETWORK";
+
+	/**
+	 * The server emit this event to client as the response.
+	 * The response argument will contains all available boards within the network.
+	 */
+	public static final String availableBoards = "AVAILABLE_BOARDS";
+
+	/**
+	 * BoardID map to Board owner 
+	 */
 	private static final HashMap<String, String> boardMap = new HashMap<>();
 	private static final Set<String> clientAddrs = new HashSet<>();
-	
+
+
 	private static void addNewBoard(String boardID) {
 		String[] parts = boardID.split(":",3);
 		String hostWithIP = parts[0] + ":" + parts[1];
@@ -108,35 +129,6 @@ public class WhiteboardServer {
 		}
 	}
 
-
-	private static void broadCastSharingBoard(String boardID, String receiverAddr) {
-		String[] parts = receiverAddr.split(":");
-		String receiverHost = parts[0];
-		int receverPort = Integer.parseInt(parts[1]);
-		try {
-			ClientManager clientManager = new ClientManager(receiverHost, receverPort);
-			clientManager.on(ClientManager.sessionStarted, (args) -> {
-				Endpoint endpoint = (Endpoint)args[0];
-				log.info("Connected to whiteboard client: "+endpoint.getOtherEndpointId());
-				endpoint.emit(WhiteboardServer.sharingBoard, boardID);
-				clientManager.shutdown();
-			}).on(ClientManager.sessionStopped, (args) -> {
-				Endpoint endpoint = (Endpoint)args[0];
-				log.info("Disconnected from peer: "+endpoint.getOtherEndpointId());
-				clientManager.shutdown();
-			}).on(ClientManager.sessionError, (args) -> {
-				Endpoint endpoint = (Endpoint)args[0];
-				log.info("There was error while communication with peer: "
-						+endpoint.getOtherEndpointId());
-				clientManager.shutdown();
-			});
-			clientManager.start();
-		} catch (UnknownHostException e) {
-			log.info("Unable sharing board to client. The whiteboard client host could not be found: "+ parts[0]);
-		} catch (InterruptedException e) {
-			log.info("Unable sharing board to client. Interrupted while trying to send updates to the client whiteboard.");
-		}
-	}
 
 	private static void broadCastBoardEventToAll(String event, String boardID) {
 		String[] parts = boardID.split(":");
@@ -178,6 +170,13 @@ public class WhiteboardServer {
 		}
 	}
 	
+	public static ArrayList<String> unpackBoardPacket(String packet) {
+		return new ArrayList<>(Arrays.asList(packet.split(",")));
+	}
+
+	public static String packBoardPacket(ArrayList<String> boards) {
+		return String.join(",", boards);
+	}
 
 	private static void help(Options options){
 		String header = "PB Whiteboard Server for Unimelb COMP90015\n\n";
@@ -238,6 +237,12 @@ public class WhiteboardServer {
 			}).on(unshareBoard, (eventArgs2)->{
 				removeBoard((String)eventArgs2[0]);
 				broadCastBoardEventToAll(unsharingBoard, (String)eventArgs2[0]);
+			}).on(joinNetwork, (eventArgs2)-> {
+				String clientAddr = (String)eventArgs2[0];
+				clientAddrs.add(clientAddr);
+				String boardInfo = packBoardPacket(new ArrayList<>(boardMap.keySet()));
+				log.info("send shared board list to this client, " + boardInfo);
+				endpoint.emit(availableBoards, boardInfo);
 			});
 		}).on(ServerManager.sessionStopped,(eventArgs)->{
         	Endpoint endpoint = (Endpoint)eventArgs[0];

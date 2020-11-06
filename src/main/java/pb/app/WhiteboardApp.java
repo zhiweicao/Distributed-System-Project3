@@ -10,6 +10,7 @@ import java.awt.event.ItemEvent;
 import java.awt.event.ItemListener;
 import java.awt.event.WindowAdapter;
 import java.awt.event.WindowEvent;
+import java.lang.reflect.Array;
 import java.net.InetAddress;
 import java.net.UnknownHostException;
 import java.time.Instant;
@@ -219,14 +220,7 @@ public class WhiteboardApp {
         	ServerManager serverManager = (ServerManager)args[0];
         	serverManager.on(IOThread.ioThread, (args2)->{
 	        	peerport = (String) args2[0];
-				try {
-					ClientManager clientManager = peerManager.connect(whiteboardServerPort, whiteboardServerHost);
-					clientManager.start();
-				} catch (UnknownHostException e) {
-					log.info("The whiteboard server host could not be found: "+ whiteboardServerHost);
-				} catch (InterruptedException e) {
-					log.info("Interrupted while trying to send updates to the index whiteboard");
-				}
+				joinBoardServerNetwork(peerManager, peerport, whiteboardServerPort, whiteboardServerHost);
 			});
 		}).on(PeerManager.peerStarted, (args)->{
         	Endpoint endpoint = (Endpoint)args[0];
@@ -331,17 +325,99 @@ public class WhiteboardApp {
 		return Integer.parseInt(parts[1]);
 	}
 	
+	public static String getIPWithPort(String data) {
+		String[] parts=data.split(":");
+		return parts[0] + ":" + parts[1];
+	}
+
 	/******
 	 * 
 	 * Methods called from events.
 	 * 
 	 ******/
 	
-	// From whiteboard server
-	public void updateBroadList(List<String> filenames,PeerManager peerManager, String peerport) {
+	/**
+	 * The board server methods
+	 */
+	
+	private void joinBoardServerNetwork(PeerManager peerManager, String peerport, int whiteboardServerPort, String whiteboardServerHost) {
+		try {
+			ClientManager clientManager = peerManager.connect(whiteboardServerPort, whiteboardServerHost);
 
+			clientManager.on(PeerManager.peerStarted, (args3) -> {
+				Endpoint endpoint = (Endpoint)args3[0];
+				log.info("Connected to whiteboard server: "+endpoint.getOtherEndpointId());
+
+				endpoint.on(WhiteboardServer.availableBoards, (args4) -> {
+					String boardInfo = (String)args4[0];
+					log.info("Receive board list from server. Board info is: " + boardInfo);
+					updateBroadList(boardInfo);
+					// TODO: Fix shutdown issues.
+					// clientManager.shutdown();
+				});
+
+				endpoint.emit(WhiteboardServer.joinNetwork, peerport);
+			}).on(PeerManager.peerStopped, (args3)->{
+				Endpoint endpoint = (Endpoint)args3[0];
+				log.info("Disconnected from peer: "+endpoint.getOtherEndpointId());
+				clientManager.shutdown();
+			}).on(PeerManager.peerError, (args3)->{
+				Endpoint endpoint = (Endpoint)args3[0];
+				log.info("There was error while communication with peer: "
+						+endpoint.getOtherEndpointId());
+				clientManager.shutdown();
+			});
+
+			clientManager.start();
+		} catch (UnknownHostException e) {
+			log.info("The whiteboard server host could not be found: "+ whiteboardServerHost);
+		} catch (InterruptedException e) {
+			log.info("Interrupted while trying to send updates to the index whiteboard");
+		}
 	}
 
+	
+	public void updateBroadList(String boardInfo) {
+		if (boardInfo.length() == 0) return;
+		ArrayList<String> boardList = WhiteboardServer.unpackBoardPacket(boardInfo);
+
+		for (String board : boardList) {
+			log.info("attempt to add share board: " + board + " to boardList in setup stage.");
+			String boardOwnerAddr = getIPWithPort(board);
+			Whiteboard whiteboard = new Whiteboard(board, true);
+			addBoardBeforeSetUp(whiteboard);
+			boardMap.put(board, boardOwnerAddr);
+		}
+	}
+
+
+	private void sendEventToAddr(PeerManager peerManager, String event, String arg, int whiteboardServerPort, String whiteboardServerHost) {
+		log.info("Whiteboard " + event + " event started. arg: " + arg);
+
+		try {
+			ClientManager clientManager = peerManager.connect(whiteboardServerPort, whiteboardServerHost);
+			clientManager.on(PeerManager.peerStarted, (args) -> {
+				Endpoint endpoint = (Endpoint)args[0];
+				log.info("Connected to whiteboard server: "+endpoint.getOtherEndpointId());
+				endpoint.emit(event, arg);
+				clientManager.shutdown();
+			}).on(PeerManager.peerStopped, (args)->{
+				Endpoint endpoint = (Endpoint)args[0];
+				log.info("Disconnected from peer: "+endpoint.getOtherEndpointId());
+				clientManager.shutdown();
+			}).on(PeerManager.peerError, (args)->{
+				Endpoint endpoint = (Endpoint)args[0];
+				log.info("There was error while communication with peer: "
+						+endpoint.getOtherEndpointId());
+				clientManager.shutdown();
+			});
+			clientManager.start();
+		} catch (UnknownHostException e) {
+			log.info("The whiteboard server host could not be found: "+ whiteboardServerHost);
+		} catch (InterruptedException e) {
+			log.info("Interrupted while trying to share boardID to the whiteboard server");
+		}
+	}
 
 	public void shareBoard(PeerManager peerManager, String boardID, int whiteboardServerPort, String whiteboardServerHost) {
 		log.info("Whiteboard share event started. Board ID: " + boardID);
@@ -402,8 +478,7 @@ public class WhiteboardApp {
 	
 	private void addSharedBoard(String boardID) {
 		log.info("attempt to add share board: " + boardID + " to boardList");
-		String[] parts = boardID.split(":");
-		String boardOwnerAddr = parts[0] + ":" + parts[1];
+		String boardOwnerAddr = getIPWithPort(boardID);
 		Whiteboard whiteboard = new Whiteboard(boardID, true);
 		addBoard(whiteboard, false);
 		boardMap.put(boardID, boardOwnerAddr);
@@ -453,6 +528,13 @@ public class WhiteboardApp {
 		updateComboBox(select?whiteboard.getName():null);
 	}
 	
+	public void addBoardBeforeSetUp(Whiteboard whiteboard) {
+		synchronized(whiteboards) {
+			whiteboards.put(whiteboard.getName(), whiteboard);
+		}
+	}
+	
+
 	/**
 	 * Delete a board from the list.
 	 * @param boardname must have the form peer:port:boardid
@@ -465,6 +547,8 @@ public class WhiteboardApp {
 			}
 		}
 		updateComboBox(null);
+
+
 		peerManager.emit(WhiteboardServer.unshareBoard, boardname);
 
 	}
@@ -477,7 +561,7 @@ public class WhiteboardApp {
 		String name = peerport+":board"+Instant.now().toEpochMilli();
 		Whiteboard whiteboard = new Whiteboard(name,false);
 		addBoard(whiteboard,true);
-		peerManager.emit(WhiteboardServer.shareBoard, name);
+		// peerManager.emit(WhiteboardServer.shareBoard, name);
 	}
 	
 	/**
@@ -549,7 +633,12 @@ public class WhiteboardApp {
 	// TODO: change default share to a set Share mode.
 	public void setShare(boolean share) {
 		if(selectedBoard!=null) {
-        	selectedBoard.setShared(share);
+			selectedBoard.setShared(share);
+			if (share == true) {
+				peerManager.emit(WhiteboardServer.shareBoard, selectedBoard.getName());
+			} else {
+				peerManager.emit(WhiteboardServer.unshareBoard, selectedBoard.getName());
+			}
         } else {
         	log.severe("there is no selected board");
         }
