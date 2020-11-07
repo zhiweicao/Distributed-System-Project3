@@ -170,12 +170,12 @@ public class WhiteboardServer {
 		}
 	}
 	
-	public static ArrayList<String> unpackBoardPacket(String packet) {
+	public static ArrayList<String> unpackPacket(String packet) {
 		return new ArrayList<>(Arrays.asList(packet.split(",")));
 	}
 
-	public static String packBoardPacket(ArrayList<String> boards) {
-		return String.join(",", boards);
+	public static String packPacket(ArrayList<String> data) {
+		return String.join(",", data);
 	}
 
 	private static void help(Options options){
@@ -240,7 +240,7 @@ public class WhiteboardServer {
 			}).on(joinNetwork, (eventArgs2)-> {
 				String clientAddr = (String)eventArgs2[0];
 				clientAddrs.add(clientAddr);
-				String boardInfo = packBoardPacket(new ArrayList<>(boardMap.keySet()));
+				String boardInfo = packPacket(new ArrayList<>(boardMap.keySet()));
 				log.info("send shared board list to this client, " + boardInfo);
 				endpoint.emit(availableBoards, boardInfo);
 			});
