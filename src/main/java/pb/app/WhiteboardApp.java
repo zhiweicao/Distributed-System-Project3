@@ -851,6 +851,9 @@ public class WhiteboardApp {
 		updateComboBox(select?whiteboard.getName():null);
 	}
 	
+	/**
+	 * Add a board before setup. Avoid update combo box.
+	 */
 	public void addBoardBeforeSetUp(Whiteboard whiteboard) {
 		synchronized(whiteboards) {
 			whiteboards.put(whiteboard.getName(), whiteboard);
