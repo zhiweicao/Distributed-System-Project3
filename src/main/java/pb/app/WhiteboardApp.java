@@ -748,6 +748,7 @@ public class WhiteboardApp {
 			}
 			drawSelectedWhiteboard(); 
 		} else {
+			// ignore the boardcast from board owner. TODO: use a better way to avoid conflict case
 			if (!(version == whiteboard.getVersion())){
 				log.warning("Cannot update whiteboard " + boardID + ". The issue occurred during addPath. "  + newPath.toString());
 			}
@@ -782,6 +783,7 @@ public class WhiteboardApp {
 			}
 			drawSelectedWhiteboard(); 
 		} else {
+			// ignore the boardcast from board owner. TODO: use a better way to avoid conflict case
 			if (!(version == whiteboard.getVersion())){
 				log.warning("Cannot update whiteboard " + boardID + ". The issue occurred during undo action. undo version is: "  + version);
 			}
@@ -814,6 +816,7 @@ public class WhiteboardApp {
 			}
 			drawSelectedWhiteboard(); 
 		} else {
+			// ignore the boardcast from board owner. TODO: use a better way to avoid conflict case
 			if (!(version == whiteboard.getVersion())){
 				log.warning("Cannot update whiteboard " + boardID + ". The error occurred during clear action. Clear version is: "  + version + ". whiteboard version is: " + whiteboard.getVersion());
 			}
