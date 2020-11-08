@@ -100,6 +100,12 @@ public class WhiteboardServer {
 	public static final String joinNetwork = "JOIN_NETWORK";
 
 	/**
+	 * The client emit this event to server during shutdown.
+	 * Server will remove this client into shared client list.
+	 */
+	public static final String leaveNetwork = "LEAVE_NETWORK";
+
+	/**
 	 * The server emit this event to client as the response.
 	 * The response argument will contains all available boards within the network.
 	 */
@@ -243,6 +249,10 @@ public class WhiteboardServer {
 				String boardInfo = packPacket(new ArrayList<>(boardMap.keySet()));
 				log.info("send shared board list to this client, " + boardInfo);
 				endpoint.emit(availableBoards, boardInfo);
+			}).on(leaveNetwork, (eventArgs2)-> {
+				String clientAddr = (String)eventArgs2[0];
+				log.info("client " + clientAddr + " leaved from network. Remove it from clientList.");
+				clientAddrs.remove(clientAddr);
 			});
 		}).on(ServerManager.sessionStopped,(eventArgs)->{
         	Endpoint endpoint = (Endpoint)eventArgs[0];

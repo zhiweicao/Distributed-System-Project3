@@ -30,6 +30,7 @@ import javax.swing.JOptionPane;
 import javax.swing.JPanel;
 import javax.swing.SwingUtilities;
 
+import jdk.jshell.execution.Util;
 import pb.WhiteboardServer;
 import pb.managers.ClientManager;
 import pb.managers.IOThread;
@@ -37,6 +38,7 @@ import pb.managers.PeerManager;
 import pb.managers.ServerManager;
 import pb.managers.endpoint.Endpoint;
 
+import pb.utils.Utils;
 
 /**
  * Initial code obtained from:
@@ -197,7 +199,8 @@ public class WhiteboardApp {
 	 */
 
 	private PeerManager peerManager;
-	private HashMap<String, ArrayList<String>> boardClientMap; 	//boardID to a list of listened client
+	private HashMap<String, ArrayList<String>> boardClientMap; 		// boardID to a list of listened client
+	private ClientManager serverClient; 							// It start at the beginning and will be shutdown when program exits.
 
 	/**
 	 * Initialize the white board app.
@@ -220,7 +223,7 @@ public class WhiteboardApp {
 		peerManager.on(PeerManager.peerServerManager, (args)->{
         	ServerManager serverManager = (ServerManager)args[0];
         	serverManager.on(IOThread.ioThread, (args2)->{
-	        	peerport = (String) args2[0];
+				peerport = (String) args2[0];
 				joinBoardServerNetwork(peerManager, peerport, whiteboardServerPort, whiteboardServerHost);
 			});
 		}).on(PeerManager.peerStarted, (args)->{
@@ -228,7 +231,6 @@ public class WhiteboardApp {
         	log.info("Connection from peer: "+endpoint.getOtherEndpointId());
         	endpoint.on(WhiteboardServer.sharingBoard, (args2) -> {
 				String boardID = (String)args2[0];
-
 				addSharedBoard(boardID);
 				getSharedBoardData(boardID);
 			}).on(WhiteboardServer.unsharingBoard, (args2) -> {
@@ -247,17 +249,11 @@ public class WhiteboardApp {
 				ArrayList<String> data = WhiteboardServer.unpackPacket(packet);
 				sendBoardInitialData(data.get(0), data.get(1), endpoint);
 			}).on(boardPathUpdate, (args2) -> {
-
-			}).on(boardPathAccepted, (args2) -> {
-				
+				addNewPathToBoard((String)args2[0], endpoint);				
 			}).on(boardUndoUpdate, (args2) -> {
-				
-			}).on(boardUndoAccepted, (args2) -> {
-				
+				updateUndoToBoard((String)args2[0], endpoint);
 			}).on(boardClearUpdate, (args2) -> {
-				
-			}).on(boardClearAccepted, (args2) -> {
-				
+				updateClearToBoard((String)args2[0], endpoint);
 			}).on(boardDeleted, (args2) -> {
 
 			});
@@ -285,7 +281,24 @@ public class WhiteboardApp {
 			int clientPort = getPort(boardID);
 			sendEventToAddr(peerManager, unlistenBoard, (String)args[0], clientPort, clientIP);
 		}).on(getBoardData, (args) -> {
-			runGetDataEvent((String)args[0]);
+			runGetDataEvent(peerManager, (String)args[0]);
+		}).on(boardPathUpdate, (args) -> {
+			runBoardUpdateEvent(peerManager, boardPathUpdate, (String)args[0]);
+		}).on(boardUndoUpdate, (args) -> {
+			runBoardUpdateEvent(peerManager, boardUndoUpdate, (String)args[0]);
+		}).on(boardClearUpdate, (args) -> {
+			runBoardUpdateEvent(peerManager, boardClearUpdate, (String)args[0]);
+		}).on(boardDeleted, (args) -> {
+			String boardID = (String)args[0];
+			if (getIPWithPort(boardID).equals(peerport)) {
+				peerManager.emit(WhiteboardServer.unshareBoard, boardID);
+			} else {
+				String packet = WhiteboardServer.packPacket(new ArrayList<>(Arrays.asList(boardID, peerport)));
+				log.info("emit unlistenBoard event");
+				peerManager.emit(unlistenBoard, packet, boardID);
+			}
+		}).on(WhiteboardServer.leaveNetwork, (args) -> {
+			sendEventToAddr(peerManager, WhiteboardServer.leaveNetwork, peerport, whiteboardServerPort, whiteboardServerHost);
 		});
 		peerManager.start();
 
@@ -373,6 +386,14 @@ public class WhiteboardApp {
 		return parts[0] + ":" + parts[1];
 	}
 
+	private static boolean isBoardOwnerEqualToAddr(String addr, String boardID) {
+		String boardOwner = getIPWithPort(boardID);
+		if (addr.equals(boardOwner)) {
+			return true;
+		}
+		return false;
+	}
+
 	/******
 	 * 
 	 * Methods called from events.
@@ -386,6 +407,7 @@ public class WhiteboardApp {
 	private void joinBoardServerNetwork(PeerManager peerManager, String peerport, int whiteboardServerPort, String whiteboardServerHost) {
 		try {
 			ClientManager clientManager = peerManager.connect(whiteboardServerPort, whiteboardServerHost);
+			serverClient = clientManager;
 
 			clientManager.on(PeerManager.peerStarted, (args3) -> {
 				Endpoint endpoint = (Endpoint)args3[0];
@@ -395,7 +417,7 @@ public class WhiteboardApp {
 					String boardInfo = (String)args4[0];
 					log.info("Receive board list from server. Board info is: " + boardInfo);
 					updateBroadList(boardInfo);
-					// TODO: Fix shutdown issues.
+					// TODO: Shutdown this clientManager when GUI is shutdown. It will maintain timer working.
 					// clientManager.shutdown();
 				});
 
@@ -424,19 +446,22 @@ public class WhiteboardApp {
 		if (boardInfo.length() == 0) return;
 		ArrayList<String> boardList = WhiteboardServer.unpackPacket(boardInfo);
 
-		for (String board : boardList) {
-			log.info("attempt to add share board: " + board + " to boardList in setup stage.");
-			Whiteboard whiteboard = new Whiteboard(board, true);
+		for (String boardID : boardList) {
+			log.info("attempt to add share boardID: " + boardID + " to boardList in setup stage.");
+			Whiteboard whiteboard = new Whiteboard(boardID, true);
 			addBoardBeforeSetUp(whiteboard);
+			if (!isBoardOwnerEqualToAddr(peerport, boardID)) {
+				getSharedBoardData(boardID);
+			}
 		}
 	}
 
 
-	private void sendEventToAddr(PeerManager peerManager, String event, String arg, int whiteboardServerPort, String whiteboardServerHost) {
+	private void sendEventToAddr(PeerManager peerManager, String event, Object arg, int port, String host) {
 		log.info("Whiteboard " + event + " event started. arg: " + arg);
 
 		try {
-			ClientManager clientManager = peerManager.connect(whiteboardServerPort, whiteboardServerHost);
+			ClientManager clientManager = peerManager.connect(port, host);
 			clientManager.on(PeerManager.peerStarted, (args) -> {
 				Endpoint endpoint = (Endpoint)args[0];
 				log.info("Connected to whiteboard server: "+endpoint.getOtherEndpointId());
@@ -454,7 +479,7 @@ public class WhiteboardApp {
 			});
 			clientManager.start();
 		} catch (UnknownHostException e) {
-			log.info("The whiteboard server host could not be found: "+ whiteboardServerHost);
+			log.info("The whiteboard server host could not be found: "+ host);
 		} catch (InterruptedException e) {
 			log.info("Interrupted while trying to share boardID to the whiteboard server");
 		}
@@ -463,7 +488,6 @@ public class WhiteboardApp {
 
 	private void addSharedBoard(String boardID) {
 		log.info("attempt to add share board: " + boardID + " to boardList");
-		String boardOwnerAddr = getIPWithPort(boardID);
 		Whiteboard whiteboard = new Whiteboard(boardID, true);
 		addBoard(whiteboard, false);
 	}
@@ -490,6 +514,10 @@ public class WhiteboardApp {
 
 	private void addBoardListener(String boardID, String clientAddr) {
 		// TODO check is owner's board
+		if (isBoardOwnerEqualToAddr(clientAddr, boardID)) {
+			log.warning("board "+ boardID +" listener is the board owner. client address is " + clientAddr);
+			return;
+		}
 		
 		ArrayList<String> clients;
 		if (!boardClientMap.containsKey(boardID)) {
@@ -499,7 +527,7 @@ public class WhiteboardApp {
 		}
 
 		clients.add(clientAddr);
-		log.info("add client: " + clientAddr + " to board "+ boardID +"listener list.");
+		log.info("add client: " + clientAddr + " to board "+ boardID +" listener list.");
 		boardClientMap.put(boardID, clients);
 	}
 
@@ -538,7 +566,7 @@ public class WhiteboardApp {
 		whiteboard.whiteboardFromString(boardID, boardData);
 	}
 
-	private void runGetDataEvent(String boardID) {
+	private void runGetDataEvent(PeerManager peerManager, String boardID) {
 		String clientIP = getIP(boardID);
 		int clientPort = getPort(boardID);
 
@@ -573,6 +601,159 @@ public class WhiteboardApp {
 			log.info("Interrupted while trying to share boardID to the whiteboard server");
 		}
 	}
+	
+	private void runBoardUpdateEvent(PeerManager peerManager, String event, String commit) {
+		String owner = getIPWithPort(commit);
+		
+		if (owner.equals(peerport)) {							// owner boardcast this path to all listener.
+			sendEventToBoardListeners(peerManager, event, commit);
+		} else {												// send path to board owner.
+			String ownerIP = getIP(owner);
+			int ownerPort = getPort(owner);
+
+			log.info("Start to update new commit to board owner.");
+	
+			try {
+				ClientManager clientManager = peerManager.connect(ownerPort, ownerIP);
+				clientManager.on(PeerManager.peerStarted, (args) -> {
+					Endpoint endpoint = (Endpoint)args[0];
+					log.info("Connected to whiteboard server: "+endpoint.getOtherEndpointId());
+					
+					//TODO: handle unaccpeted cases.
+					if (event.equals(boardPathUpdate)) {
+						endpoint.on(boardPathAccepted, (args2) -> {
+							clientManager.shutdown();
+						});
+						endpoint.emit(boardPathUpdate, commit);
+					} else if (event.equals(boardUndoUpdate)) {
+						endpoint.on(boardUndoAccepted, (args2) -> {
+							clientManager.shutdown();
+						});
+						endpoint.emit(boardUndoUpdate, commit);
+					} else if (event.equals(boardClearUpdate)) {
+						endpoint.on(boardClearAccepted, (args2) -> {
+							clientManager.shutdown();
+						});
+						endpoint.emit(boardClearUpdate, commit);
+					}
+
+				   }).on(PeerManager.peerStopped, (args)->{
+					Endpoint endpoint = (Endpoint)args[0];
+					log.info("Disconnected from peer: "+endpoint.getOtherEndpointId());
+					clientManager.shutdown();
+				}).on(PeerManager.peerError, (args)->{
+					Endpoint endpoint = (Endpoint)args[0];
+					log.info("There was error while communication with peer: "
+							+endpoint.getOtherEndpointId());
+					clientManager.shutdown();
+				});
+				clientManager.start();
+			} catch (UnknownHostException e) {
+				log.info("The whiteboard server host could not be found: "+ ownerIP);
+			} catch (InterruptedException e) {
+				log.info("Interrupted while trying to share boardID to the whiteboard server");
+			}	
+
+			
+		}
+	}
+
+
+	private void sendEventToBoardListeners(PeerManager peerManager, String event, String commit) {
+		String boardID = getBoardName(commit);
+		if (!boardClientMap.containsKey(boardID)) return;
+		ArrayList<String> allClientAddr = boardClientMap.get(boardID);
+
+		for(String clientAddr: allClientAddr) {
+			log.info("Send board commit to board listener: " + clientAddr + ". Commit: " + commit);
+			String clientHost = getIP(clientAddr);
+			int clientPort = getPort(clientAddr);
+			sendEventToAddr(peerManager, event, commit, clientPort, clientHost);
+		}
+	}
+
+	private void addNewPathToBoard(String commit, Endpoint endpoint) {
+		String boardID = getBoardName(commit);
+		String owner = getIPWithPort(boardID);
+		long version = getBoardVersion(commit);
+		String newPath = getBoardPaths(commit);
+
+		if (!whiteboards.containsKey(boardID)) {
+			log.warning("Cannot update whiteboard " + boardID + ". Because it is not found in the boardlist.");
+			return;
+		}
+
+		Whiteboard whiteboard = whiteboards.get(boardID);
+
+		if (whiteboard.addPath(new WhiteboardPath(newPath), version-1)) {
+			if (peerport.equals(owner)) {
+				log.info("Path change has been added into board: " + boardID + ". The path data are: " + newPath.toString());
+				endpoint.emit(boardPathAccepted, "");
+				sendEventToBoardListeners(peerManager, boardPathUpdate, commit);
+			} else {
+				log.info("Accpet change from board owner: " + boardID + ". The path data are: " + newPath.toString());
+			}
+			drawSelectedWhiteboard(); 
+		} else {
+			log.warning("Cannot update whiteboard " + boardID + ". The error occurred during addPath. "  + newPath.toString());
+		}
+	}
+
+
+
+	private void updateUndoToBoard(String commit, Endpoint endpoint) {
+		String boardID = getBoardName(commit);
+		String owner = getIPWithPort(boardID);
+		long version = getBoardVersion(commit);
+
+		if (!whiteboards.containsKey(boardID)) {
+			log.warning("Cannot update whiteboard " + boardID + ". Because it is not found in the boardlist.");
+			return;
+		}
+
+		Whiteboard whiteboard = whiteboards.get(boardID);
+
+		if (whiteboard.undo(version-1)) {
+			if (peerport.equals(owner)) {
+				log.info("Undo change has been made into board: " + boardID + ". The Undo version are: " + version);
+				endpoint.emit(boardUndoAccepted, "");
+				sendEventToBoardListeners(peerManager, boardUndoUpdate, commit);
+			} else {
+				log.info("Accpet change from board owner: " + boardID + ". The Undo version are: " + version);
+			}
+			drawSelectedWhiteboard(); 
+		} else {
+			log.warning("Cannot update whiteboard " + boardID + ". The error occurred during undo action. undo version is: "  + version);
+		}
+	}
+
+	private void updateClearToBoard(String commit, Endpoint endpoint) {
+		String boardID = getBoardName(commit);
+		String owner = getIPWithPort(boardID);
+		long version = getBoardVersion(commit);
+
+		if (!whiteboards.containsKey(boardID)) {
+			log.warning("Cannot update whiteboard " + boardID + ". Because it is not found in the boardlist.");
+			return;
+		}
+
+		Whiteboard whiteboard = whiteboards.get(boardID);
+
+		if (whiteboard.clear(version-1)) {
+			if (peerport.equals(owner)) {
+				log.info("Clear change has been made into board: " + boardID + ". The clear version are: " + version);
+				endpoint.emit(boardClearAccepted, "");
+				sendEventToBoardListeners(peerManager, boardClearUpdate, commit);
+			} else {
+				log.info("Accpet change from board owner: " + boardID + ". The clear version are: " + version);
+			}
+			drawSelectedWhiteboard(); 
+		} else {
+			log.warning("Cannot update whiteboard " + boardID + ". The error occurred during clear action. Clear version is: "  + version + ". whiteboard version is: " + whiteboard.getVersion());
+		}
+	}
+	
+
 	/******
 	 * 
 	 * Methods to manipulate data locally. Distributed systems related code has been
@@ -620,14 +801,7 @@ public class WhiteboardApp {
 		}
 		updateComboBox(null);
 
-		if (getIPWithPort(boardname).equals(peerport)) {
-			peerManager.emit(WhiteboardServer.unshareBoard, boardname);
-		} else {
-			String packet = WhiteboardServer.packPacket(new ArrayList<>(Arrays.asList(boardname, peerport)));
-			log.info("emit unlistenBoard event");
-			peerManager.emit(unlistenBoard, packet, boardname);
-		}
-
+		peerManager.emit(boardDeleted, boardname);
 	}
 	
 	/**
@@ -654,7 +828,8 @@ public class WhiteboardApp {
 				drawSelectedWhiteboard(); // just redraw the screen without the path
 			} else {
 				// was accepted locally, so do remote stuff if needed
-				
+				String commit = selectedBoard.getNameAndVersion() + "%" + currentPath.toString();
+				peerManager.emit(boardPathUpdate, commit);			
 			}
 		} else {
 			log.severe("path created without a selected board: "+currentPath);
@@ -671,7 +846,8 @@ public class WhiteboardApp {
 				drawSelectedWhiteboard();
 			} else {
 				// was accepted locally, so do remote stuff if needed
-				
+				String commit = selectedBoard.getNameAndVersion();
+				peerManager.emit(boardClearUpdate, commit);
 				drawSelectedWhiteboard();
 			}
 		} else {
@@ -688,7 +864,8 @@ public class WhiteboardApp {
 				// some other peer modified the board in between
 				drawSelectedWhiteboard();
 			} else {
-				
+				String commit = selectedBoard.getNameAndVersion();
+				peerManager.emit(boardUndoUpdate, commit);
 				drawSelectedWhiteboard();
 			}
 		} else {
@@ -731,7 +908,11 @@ public class WhiteboardApp {
 		});
     	whiteboards.values().forEach((whiteboard)->{
     		
-    	});
+		});
+		peerManager.emit(WhiteboardServer.leaveNetwork, "");
+		Utils.getInstance().setTimeout(() -> {
+			serverClient.shutdown();
+		}, 1000);
 	}
 	
 	

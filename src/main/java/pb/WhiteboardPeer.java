@@ -94,6 +94,7 @@ public class WhiteboardPeer {
 		WhiteboardApp whiteboard = new WhiteboardApp(peerPort,host,whiteboardServerPort);
 		whiteboard.waitToFinish();
 		Utils.getInstance().cleanUp();
+		log.info("Whiteboard Peer stopped.");
 	}
 
 }
