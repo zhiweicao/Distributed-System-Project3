@@ -400,10 +400,17 @@ public class WhiteboardApp {
 	 * 
 	 ******/
 	
+
 	/**
 	 * The board server methods
 	 */
-	
+	/**
+	 * Run this method in the setup stage to get all shared boards in the network.
+	 * @param peerManager
+	 * @param peerport
+	 * @param whiteboardServerPort
+	 * @param whiteboardServerHost
+	 */
 	private void joinBoardServerNetwork(PeerManager peerManager, String peerport, int whiteboardServerPort, String whiteboardServerHost) {
 		try {
 			ClientManager clientManager = peerManager.connect(whiteboardServerPort, whiteboardServerHost);
@@ -417,7 +424,7 @@ public class WhiteboardApp {
 					String boardInfo = (String)args4[0];
 					log.info("Receive board list from server. Board info is: " + boardInfo);
 					updateBroadList(boardInfo);
-					// TODO: Shutdown this clientManager when GUI is shutdown. It will maintain timer working.
+					// Shutdown this clientManager when GUI is shutdown. It will maintain timer working.
 					// clientManager.shutdown();
 				});
 
@@ -441,8 +448,11 @@ public class WhiteboardApp {
 		}
 	}
 
-	
-	public void updateBroadList(String boardInfo) {
+	/**
+	 * run this method at the initial stage to receice all shared board id and require board data from owners.
+	 * @param boardInfo
+	 */
+	private void updateBroadList(String boardInfo) {
 		if (boardInfo.length() == 0) return;
 		ArrayList<String> boardList = WhiteboardServer.unpackPacket(boardInfo);
 
@@ -456,7 +466,9 @@ public class WhiteboardApp {
 		}
 	}
 
-
+	/**
+	 * A general method to send an event with arguemnt to a receiver.
+	 */
 	private void sendEventToAddr(PeerManager peerManager, String event, Object arg, int port, String host) {
 		log.info("Whiteboard " + event + " event started. arg: " + arg);
 
@@ -485,20 +497,28 @@ public class WhiteboardApp {
 		}
 	}
 
-
+	/**
+	 * Add shared board into combo box
+	 */
 	private void addSharedBoard(String boardID) {
 		log.info("attempt to add share board: " + boardID + " to boardList");
 		Whiteboard whiteboard = new Whiteboard(boardID, true);
 		addBoard(whiteboard, false);
 	}
 
+	/**
+	 * get shared board data from board owner.
+	 */
 	private void getSharedBoardData(String boardID) {
 		log.info("Requesting shared board.");
 		String packet = WhiteboardServer.packPacket(new ArrayList<>(Arrays.asList(boardID, peerport)));
 		peerManager.emit(listenBoard, packet, boardID);
 		peerManager.emit(getBoardData, packet);
 	}
-
+	
+	/**
+	 * remove shared board from combo box
+	 */
 	private void removeSharedBoard(String boardID) {
 		log.info("attempt to remove share board: " + boardID + " to boardList");
 
@@ -512,8 +532,10 @@ public class WhiteboardApp {
 		updateComboBox(null);
 	}	
 
+	/**
+	 * Add board listener to own's boardID map
+	 */
 	private void addBoardListener(String boardID, String clientAddr) {
-		// TODO check is owner's board
 		if (isBoardOwnerEqualToAddr(clientAddr, boardID)) {
 			log.warning("board "+ boardID +" listener is the board owner. client address is " + clientAddr);
 			return;
@@ -531,6 +553,9 @@ public class WhiteboardApp {
 		boardClientMap.put(boardID, clients);
 	}
 
+	/**
+	 * remove board listener to own's boardID map
+	 */
 	private void removeBoardListener(String boardID, String clientAddr) {
 		ArrayList<String> clients;
 		if (!boardClientMap.containsKey(boardID)) return;
@@ -541,6 +566,9 @@ public class WhiteboardApp {
 		boardClientMap.put(boardID, clients);
 	}	
 	
+	/**
+	 * reply the getBoardData request and send board data back.
+	 */
 	private void sendBoardInitialData(String boardID, String clientAddr, Endpoint endpoint) {
 		if (!whiteboards.containsKey(boardID)) return;
 
@@ -553,6 +581,9 @@ public class WhiteboardApp {
 		endpoint.emit(boardData, data);
 	}
 
+	/**
+	 *  draw board based on the received data
+	 */
 	private void drawBoardInitialData(String data) {
 		String boardID = getBoardName(data);
 		String boardData = getBoardData(data);
@@ -566,6 +597,9 @@ public class WhiteboardApp {
 		whiteboard.whiteboardFromString(boardID, boardData);
 	}
 
+	/**
+	 * emit getBoardData to board owner. The client will be shutdown after receive boardData.
+	 */
 	private void runGetDataEvent(PeerManager peerManager, String boardID) {
 		String clientIP = getIP(boardID);
 		int clientPort = getPort(boardID);
@@ -602,6 +636,14 @@ public class WhiteboardApp {
 		}
 	}
 	
+	/**
+	 * Run boardupdate event, will emit path, undo, or clear event
+	 * if owner run this function. it will broadcast change to all listener.
+	 * otherwise, this change will send to board owner to get accept.
+	 * @param peerManager
+	 * @param event
+	 * @param commit
+	 */
 	private void runBoardUpdateEvent(PeerManager peerManager, String event, String commit) {
 		String owner = getIPWithPort(commit);
 		
@@ -658,7 +700,12 @@ public class WhiteboardApp {
 		}
 	}
 
-
+	/**
+	 * send action event to all of this board listener.
+	 * @param peerManager
+	 * @param event
+	 * @param commit
+	 */
 	private void sendEventToBoardListeners(PeerManager peerManager, String event, String commit) {
 		String boardID = getBoardName(commit);
 		if (!boardClientMap.containsKey(boardID)) return;
@@ -672,6 +719,12 @@ public class WhiteboardApp {
 		}
 	}
 
+	/**
+	 * add updated path to listened board.
+	 * the owner will boardcast this change to all listener.
+	 * @param commit
+	 * @param endpoint
+	 */
 	private void addNewPathToBoard(String commit, Endpoint endpoint) {
 		String boardID = getBoardName(commit);
 		String owner = getIPWithPort(boardID);
@@ -695,12 +748,18 @@ public class WhiteboardApp {
 			}
 			drawSelectedWhiteboard(); 
 		} else {
-			log.warning("Cannot update whiteboard " + boardID + ". The error occurred during addPath. "  + newPath.toString());
+			if (!(version == whiteboard.getVersion())){
+				log.warning("Cannot update whiteboard " + boardID + ". The issue occurred during addPath. "  + newPath.toString());
+			}
 		}
 	}
 
-
-
+	/**
+	 * add updated undo to listened board.
+	 * the owner will boardcast this change to all listener.
+	 * @param commit
+	 * @param endpoint
+	 */
 	private void updateUndoToBoard(String commit, Endpoint endpoint) {
 		String boardID = getBoardName(commit);
 		String owner = getIPWithPort(boardID);
@@ -723,10 +782,16 @@ public class WhiteboardApp {
 			}
 			drawSelectedWhiteboard(); 
 		} else {
-			log.warning("Cannot update whiteboard " + boardID + ". The error occurred during undo action. undo version is: "  + version);
+			if (!(version == whiteboard.getVersion())){
+				log.warning("Cannot update whiteboard " + boardID + ". The issue occurred during undo action. undo version is: "  + version);
+			}
 		}
 	}
 
+	/**
+	 * make clear to listened board.
+	 * the owner will boardcast this change to all listener.
+	 */
 	private void updateClearToBoard(String commit, Endpoint endpoint) {
 		String boardID = getBoardName(commit);
 		String owner = getIPWithPort(boardID);
@@ -749,7 +814,9 @@ public class WhiteboardApp {
 			}
 			drawSelectedWhiteboard(); 
 		} else {
-			log.warning("Cannot update whiteboard " + boardID + ". The error occurred during clear action. Clear version is: "  + version + ". whiteboard version is: " + whiteboard.getVersion());
+			if (!(version == whiteboard.getVersion())){
+				log.warning("Cannot update whiteboard " + boardID + ". The error occurred during clear action. Clear version is: "  + version + ". whiteboard version is: " + whiteboard.getVersion());
+			}
 		}
 	}
 	
